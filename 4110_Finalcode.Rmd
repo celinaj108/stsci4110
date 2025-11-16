@@ -1,0 +1,1109 @@
+---
+title: "4110_Prelim2_Group11"
+output:
+  pdf_document: 
+     latex_engine: xelatex
+
+  html_document:
+    df_print: paged
+author: Sore Ajagbe, Alannah Dennis, Celina Jang, Cristina Rojo, Kai Wang
+date: "2025-11-09"
+---
+
+# The main objective of this assignment:
+You should analyze and determine which factors might be predictive of a song being a
+“long-stay” song which stayed in the Number One spot for four or more weeks. You
+should also evaluate and quantify how those factors increase or decrease the
+probability of being a long-stay song.
+
+# The minor objective of this assignment:
+You should discuss one characteristic that has shown a large shift in predictive
+importance over time. This may include a comparison of the key factors in predicting long-
+staying songs for two different decades (one prior to 2000 and one after 2000).
+
+# Data Cleaning
+```{r}
+library(tidyverse)
+
+data <- read.csv('Billboard Top Songs v3 UPDATED.csv')
+num_var_list <- c('Overall.Rating', 'Disagreement', 'BPM', 'Energy', 'Danceability', 'Happiness',
+                     'Acousticness', "Length")
+
+
+# Data Cleaning
+## identify any rows with missing or NA values
+data[!complete.cases(data), ]
+
+## remove rows with missing values and save as new data
+data <- data[complete.cases(data), ]
+
+## check any duplicates --> no duplicates found
+data[duplicated(data), ]
+
+## check outliers 
+data |>
+  pivot_longer(all_of(num_var_list)) |>
+  ggplot(aes(x = name, y = value)) +
+  geom_boxplot() +
+  theme_minimal()
+
+### Change codings
+
+data <- data |>
+  mutate(
+    # Artist.Male has more than two categories. 
+    # The non-binary group only includes 5 observations, so we combine this with the mixed-gender
+    # category.
+    Artist.Sex = case_when(Artist.Male==0 ~ "All male",
+                                Artist.Male==1 ~ "All female",
+                                Artist.Male==2 | Artist.Male==3 ~ "Coed"),
+     # Artist.Structure has no natural ordering
+    Artist.Structure2 = case_when(Artist.Structure==0 ~ "3 or more",
+                                  Artist.Structure==1 ~ "Solo",
+                                  Artist.Structure==2 ~ "Duo"))
+
+
+# - Artist.White has one observation with coding of 4, which is not explained in the codebook, so we remove this observation.
+data <- data[!(data$Artist.White=="4"),]
+
+
+# - Additionally, we can combine the Artist.White and Artist.Black variables into one category, which will make interpretation easier later on. The new codings are AllWhite, AllBlack, and Mixed. Before we do this, we remove flawed values.
+# one row has a group categorized as all white and all black. This is impossible, so we remove this observation
+data <- data[!(data$Artist.White == "1" & data$Artist.Black == "1"),]
+
+# recode
+data <- data |> 
+    mutate(Race = case_when(
+        Artist.White == "1" ~ "All White",
+        Artist.Black == "1" ~ "All Black",
+        TRUE ~ "Mixed"
+    ))
+
+# - Guitar.Based has an observation with the coding 42, which is not explained in the codebook, so we remove this observation.
+data <- data[!(data$Guitar.Based == 42),]
+
+
+# - BPM has an observation of 2654, which is an extreme outlier and is not the BPM of the song it is associated with (I Think I Love You - The Partridge Family). From external sources, the BPM of this song is 203, so we replace 2654 with the real value.
+data$BPM[(data$BPM==2654)] <- 203
+# - It also has an outlier of 16, associated with Against All Odds (Take a Look at Me Now) - Phil Collins, but the true BPM is 116.
+data$BPM[(data$BPM==16)] <- 116
+
+# convert Artist.White column type 
+data <- data |> mutate(Artist.White = as.numeric(Artist.White))
+
+
+# Rewrite updated dataset
+write.csv(data, file = "cleaned_billboard.csv", row.names = FALSE)
+
+```
+
+# Making Descriptive Tables
+
+```{r}
+library(knitr)
+library(kableExtra)
+
+# Distribution of variables
+## categorical variables
+cat_var_list <- c('Artist.Structure2', 'Artist.Sex', 'Race', 'Decade',
+                  "Vocally.Based", "Bass.Based", "Guitar.Based", "Piano.Based", "Saxophone",
+                  "Trumpet", "Written.for.a.Film")
+
+label_map <- list(
+  Long.Stay = c("0" = "Number One for 3 or fewer weeks",
+                "1" = "Number One for 4+ weeks"),
+  Vocally.Based = c("0" = "Not largely based", "1" = "Largely Based"),
+  Bass.Based = c("0" = "Not largely based", "1" = "Largely Based"),
+  Guitar.Based = c("0" = "Not largely based", "1" = "Largely Based"),
+  Piano.Based = c("0" = "Not largely based", "1" = "Largely Based"),
+  Saxophone = c("0" = "No", "1" = "Yes"),
+  Trumpet = c("0" = "No", "1" = "Yes"),
+  Written.for.a.Film = c("0" = "No", "1" = "Yes")
+)
+
+describe_cat <- function(var_list, outcome) {
+  dat <- data
+  n_total <- nrow(dat)
+  n_outcome0 <- sum(dat[[outcome]] == 0, na.rm = TRUE)
+  n_outcome1 <- sum(dat[[outcome]] == 1, na.rm = TRUE)
+  
+  result <- tibble()
+  
+  for (var_name in var_list) {
+    dat2 <- dat
+    
+    # ensure character for grouping
+    dat2[[var_name]] <- as.character(dat2[[var_name]])  
+    
+    # apply label mapping to translate numerical coding
+    if (var_name %in% names(label_map)) {
+      dat2[[var_name]] <- sapply(dat2[[var_name]], function(x) label_map[[var_name]][[x]])
+    }
+    
+    # overall counts and percents
+    overall <- dat2 |>
+      group_by(level = .data[[var_name]]) |>
+      summarise(count_total = n(), .groups = "drop") |>
+      mutate(percent_total = round(100 * count_total / n_total, 1))
+    
+    # counts within Long.Stay == 0
+    outcome0 <- dat2 |>
+      filter(.data[[outcome]] == 0) |>
+      group_by(level = .data[[var_name]]) |>
+      summarise(count_outcome0 = n(), .groups = "drop") |>
+      mutate(percent_outcome0 = round(100 * count_outcome0 / n_outcome0, 1))
+    
+    # counts within Long.Stay == 1
+    outcome1 <- dat2 |>
+      filter(.data[[outcome]] == 1) |>
+      group_by(level = .data[[var_name]]) |>
+      summarise(count_outcome1 = n(), .groups = "drop") |>
+      mutate(percent_outcome1 = round(100 * count_outcome1 / n_outcome1, 1))
+    
+    # join data sets
+    joined <- overall |>
+      full_join(outcome0, by = "level") |>
+      full_join(outcome1, by = "level") |>
+      replace_na(list(count_total = 0, percent_total = 0,
+                      count_outcome0 = 0, percent_outcome0 = 0,
+                      count_outcome1 = 0, percent_outcome1 = 0)) |>
+      arrange(desc(count_total)) |>
+      mutate(
+        variable = var_name,
+        `Overall (n, %)` = sprintf("%d (%.1f%%)", count_total, percent_total),
+        `Long.Stay = 1 (n, %)` = sprintf("%d (%.1f%%)", count_outcome1, percent_outcome1)
+      ) |>
+      select(variable, level, `Overall (n, %)`, `Long.Stay = 1 (n, %)`)
+
+    # keep variable name only on first row for readability
+    if (nrow(joined) > 1) joined$variable[-1] <- ""
+    
+    # Chi-square test for association with Long.Stay
+    tbl <- table(dat2[[var_name]], dat2[[outcome]])
+    chi_test <- chisq.test(tbl)
+    chi_stat <- round(chi_test$statistic, 2)
+    chi_p <- round(chi_test$p.value, 3)
+    df <- chi_test$parameter
+      
+    # Add chi-square and p-value to the first row of each variable
+    joined$chisq <- ""
+    joined$chisq[1] <- paste0("X² = ", chi_stat, ", df = ", df, ", p = ", chi_p)
+
+    
+    result <- bind_rows(result, joined)
+  }
+  
+  return(result)
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  
+cat_summary <- describe_cat(cat_var_list, "Long.Stay")
+  
+# polish variable name for readability
+cat_summary$variable <- gsub("\\.|[0-9]", " ", cat_summary$variable) 
+cat_summary$variable <- trimws(cat_summary$variable) 
+
+var_start_rows <- which(cat_summary$variable != "")
+line_before <- var_start_rows[var_start_rows > 1] - 1
+
+kable(cat_summary,
+      caption = "Descriptive Statistics of Categorical Variables by Long.Stay",
+      digits = 1,
+      col.names = c("Variable", "Level", 'Overall (n, %)',
+                    'Long.Stay = 1 (n, %)', 'Chi-square (p-value)'),
+      escape=F) |>
+  kable_styling(bootstrap_options = c("striped"), full_width= F) |>
+  row_spec(line_before, hline_after = TRUE)
+
+
+## numerical variables
+describe_num <- function(var_list, outcome) {
+  results <- data.frame()
+  
+  for (var_name in var_list) {
+    # likelihood ratio test
+    model_full <- glm(as.formula(paste(outcome, "~", var_name)), 
+                      data = data, family = binomial)
+    model_null <- glm(as.formula(paste(outcome, "~ 1")), 
+                      data = data, family = binomial)
+    G2 <- deviance(model_null) - deviance(model_full)
+    p_value <- round(pchisq(G2, df = 1, lower.tail = FALSE), 3)
+    
+    # summary stats by Long.Stay
+    stat_table <- data |>
+      summarise(
+        mean = round(mean(data[[var_name]], na.rm = TRUE), 2),
+        median = round(median(data[[var_name]], na.rm = TRUE), 2),
+        sd = round(sd(data[[var_name]], na.rm = TRUE), 2),
+        min = round(min(data[[var_name]], na.rm = TRUE), 2),
+        max = round(max(data[[var_name]], na.rm = TRUE), 2),
+      ) |>
+      mutate(
+        `Mean (SD)` = sprintf("%.2f (%.2f)", mean, sd)
+      )
+    
+    # adjust formatting
+    wide_stats <- tibble(
+      Variable = var_name,
+      `Mean (SD)` = stat_table$`Mean (SD)`,
+      Median = stat_table$median,
+      Min = stat_table$min,
+      Max = stat_table$max,
+      `p-value` = p_value
+    )
+    
+    results <- bind_rows(results, wide_stats)
+  }
+  
+  return(results)
+}
+
+
+num_summary <- describe_num(num_var_list, "Long.Stay")
+
+# polish variable name for readability
+num_summary$Variable <- gsub("\\.|[0-9]", " ", num_summary$Variable) 
+num_summary$Variable <- trimws(num_summary$Variable) 
+
+# determine which rows should get a line before them
+var_start_rows <- which(num_summary$variable != "")
+line_before <- var_start_rows[var_start_rows > 1] - 1
+
+kable(num_summary, caption = "Descriptive Statistics of Numerical Variables") |>
+  kable_styling(bootstrap_options = c("striped")) |>
+  row_spec(line_before, hline_after = TRUE)
+
+```
+
+# Contingency Table
+```{r}
+attach(data)
+
+# We use proportions instead of pure counts to more easily visualize the relationships.
+
+# a function to facilitate printing contingency tables
+tprint <- function(varname) {
+    tab <- prop.table(table(Long.Stay, get(varname)), 2)
+    t(tab)
+}
+
+plot(tprint("Decade"), main="Decades vs Long-stay Rate", ylab="Long Stay?", 
+     col=c("gray", "darkolivegreen"))
+axis(4, at = seq(0, 1, by = 0.1), labels = seq(0, 1, by = 0.1))
+### There are notably fewer long-stays in the 60s, 70s, and 80s than surrounding years, with 
+### another notably low percentage of long-stays in the 2020 decade. There isn't a lienar trend 
+### so we shouldn't treat this variable as continuous.  
+
+plot(tprint("Artist.Structure"), main="Long-stay rate vs Artist Structure", ylab="Long Stay?",
+     col=c("gray", "darkolivegreen"))
+### Long-stays are the least prevalent for groups with three or more people, 
+### somewhat higher for duos, and slightly higher yet for individuals (about 10% higher than for 
+### trios or larger).
+
+plot(tprint("Artist.Male"), main="Long-stay Rate vs Male", ylab="Long Stay?", 
+     col=c("gray", "darkolivegreen"))
+### Mixed-gender groups have the highest percentage of long-stay songs compared to individuals 
+### and single-gender groups. Females have the lowest long-stay percentage and males are in 
+### the middle.
+
+plot(tprint("Race"), main="Long-stay Rate vs Race", ylab="Long Stay?", 
+     col=c("gray", "darkolivegreen"))
+### Mixed-race groups have the highest percentage of long-stay songs, with black groups/individuals
+### in second and white groups/individuals with the lowest percentage.
+
+plot(tprint("Vocally.Based"), main="Long-stay Rate vs Vocal-based", ylab="Long Stay?", 
+     col=c("gray", "darkolivegreen"))
+### The long-stay rate is similar for vocally-based and non-vocally-based songs, though it 
+### is higher for non-vocally based songs.
+
+plot(tprint("Bass.Based"), main="Long-stay Rate vs Bass-based", ylab="Long Stay?", 
+     col=c("gray", "darkolivegreen"))
+### The long-stay rate is slightly higher for bass-based songs.
+
+plot(tprint("Guitar.Based"), main="Long-stay Rate vs Guitar-based", ylab="Long Stay?",
+     col=c("gray", "darkolivegreen"))
+### The long-stay rate is considerably lower for guitar-based songs.
+
+plot(tprint("Piano.Based"), main="Long-stay Rate vs Piano-based", ylab="Long Stay?", 
+     col=c("gray", "darkolivegreen"))
+### The long-stay rate is very similar but slightly higher for non-piano-based songs.
+
+plot(tprint("Saxophone"), main="Long-stay Rate vs Saxophone", ylab="Long Stay?", 
+     col=c("gray", "darkolivegreen"))
+### The long-stay rate is somewhat lower for songs that feature saxophone.
+
+plot(tprint("Trumpet"), main="Long-stay Rate vs Trumpet", ylab="Long Stay?",
+     col=c("gray", "darkolivegreen"))
+### The long-stay rate is considerably lower for songs that feature trumpet.
+
+plot(tprint("Written.for.a.Film"), main="Long-stay Rate vs Written for a Film", 
+     ylab="Long Stay?", col=c("gray", "darkolivegreen"))
+### The long-stay rate is slightly higher for songs that were written for films.
+
+
+#### Continuous vars
+
+# Length
+
+cats <- c(min(Length)-1, 150, 180, 210, 240, 270, 300, max(Length))
+emp_probs <- numeric(length(cats)-1)
+n <- numeric(length(cats)-1)
+
+for (i in 1:(length(cats)-1)){
+    emp_probs[i] <- mean(Long.Stay[Length > cats[i] & Length <= cats[i+1]])
+    emp_probs[i] <- log(emp_probs[i]/(1-emp_probs[i]))
+    n[i] <- sum(Length > cats[i] & Length <= cats[i+1])
+}
+
+to_plot <- (cats[-length(cats)] + cats[-1])/2 # average value for each category
+plot(to_plot, emp_probs, pch=20, xlab = "Length (seconds)", ylab="Empirical log-odds of long-stay")
+
+### There isn't a clear trend between length and log-odds of being a long-stay, though it is clear
+### that the empirical probability is lower for songs shorter than 200 seconds, and there is a peak
+### for songs just under 300 seconds. Longer songs (over 300 seconds) again have a low empirical
+### probability of being a long-stay.
+
+# Overall Rating
+cats <- c(0.99, 2:10)
+emp_probs <- numeric(length(cats)-1)
+n <- numeric(length(cats)-1)
+
+for (i in 1:(length(cats)-1)){
+    emp_probs[i] <- mean(Long.Stay[Overall.Rating > cats[i] & Overall.Rating <= cats[i+1]])
+    emp_probs[i] <- log(emp_probs[i]/(1-emp_probs[i]))
+    n[i] <- sum(Overall.Rating > cats[i] & Overall.Rating <= cats[i+1])
+}
+
+to_plot <- (cats[-length(cats)] + cats[-1])/2 # average value for each category
+plot(to_plot, emp_probs, pch=20, xlab = "Overall rating", ylab="Empirical log-odds of long-stay")
+
+### There isn't a clear trend between overall rating and log-odds  of being a long-stay, though the
+### empirical probabiility is particularly low for ratings between 3 and 4 and particularly high for
+### ratings between 7 and 8. The other data points seem relatively horizontal, showing no obvious
+### trend.
+
+# Disagreement
+
+# There is an extreme value here (16.6), and this song was not a long-stay. The plot focuses on the
+# other observations.
+cats <- c(-0.1, 0.67, 1.33, 2, 2.67, 3.33, 6)-0.01
+emp_probs <- numeric(length(cats)-1)
+n <- numeric(length(cats)-1)
+
+for (i in 1:(length(cats)-1)){
+    emp_probs[i] <- mean(Long.Stay[Disagreement > cats[i] & Disagreement <= cats[i+1]])
+    emp_probs[i] <- log(emp_probs[i]/(1-emp_probs[i]))
+    n[i] <- sum(Disagreement > cats[i] & Disagreement <= cats[i+1])
+}
+to_plot <- (cats[-length(cats)] + cats[-1])/2 # average value for each category
+plot(to_plot, emp_probs, pch=20, xlab = "Disagreement", ylab="Empirical log-odds of long-stay")
+# There is no clear pattern, but there is a much higher empirical log-odds of being a long-stay for
+# Disagreement scores over 3.33 compared to disagreement scores below 3.33.
+
+# BPM
+cats <- c(60, 80, 90, 95, 100, 105, 110, 120, 125, 130, 135, 150, max(BPM))
+emp_probs <- numeric(length(cats)-1)
+n <- numeric(length(cats)-1)
+
+for (i in 1:(length(cats)-1)){
+    emp_probs[i] <- mean(Long.Stay[BPM > cats[i] & BPM <= cats[i+1]])
+    emp_probs[i] <- log(emp_probs[i]/(1-emp_probs[i]))
+    n[i] <- sum(BPM > cats[i] & BPM <= cats[i+1])
+}
+
+to_plot <- (cats[-length(cats)] + cats[-1])/2 # average value for each category
+plot(to_plot, emp_probs, pch=20, xlab = "BPM", ylab="Empirical log-odds of long-stay")
+# There seems to be a negative association between BPM and log-odds of being a long-stay from 60 to
+# 150, but at higher BPMs (>150) there is an increased log-odds of being a long-stay. This is likely
+# not a result of small sample size in the last category (n=97), so the effect may not be linear.
+
+# Energy
+cats <- c(0, 30, 40, 45, 50, 55, 60, 65, 70, 75, 80, 90, 100)
+emp_probs <- numeric(length(cats)-1)
+n <- numeric(length(cats)-1)
+
+for (i in 1:(length(cats)-1)){
+    emp_probs[i] <- mean(Long.Stay[Energy > cats[i] & Energy <= cats[i+1]])
+    emp_probs[i] <- log(emp_probs[i]/(1-emp_probs[i]))
+    n[i] <- sum(Energy > cats[i] & Energy <= cats[i+1])
+}
+
+to_plot <- (cats[-length(cats)] + cats[-1])/2 # average value for each category
+plot(to_plot, emp_probs, pch=20, xlab = "Energy", ylab="Empirical log-odds of long-stay")
+# The empirical log-odds are all over the place for different categories of energy and there is no
+# obvious trend.
+
+# Danceability
+cats <- c(0, 30, 40, 50, 55, 60, 65, 70, 75, 80, 90, 100)
+emp_probs <- numeric(length(cats)-1)
+n <- numeric(length(cats)-1)
+
+for (i in 1:(length(cats)-1)){
+    emp_probs[i] <- mean(Long.Stay[Danceability > cats[i] & Danceability <= cats[i+1]])
+    emp_probs[i] <- log(emp_probs[i]/(1-emp_probs[i]))
+    n[i] <- sum(Danceability > cats[i] & Danceability <= cats[i+1])
+}
+
+to_plot <- (cats[-length(cats)] + cats[-1])/2 # average value for each category
+plot(to_plot, emp_probs, pch=20, xlab = "Danceability", ylab="Empirical log-odds of long-stay")
+# The relationship between empirical log-odds and danceability isn't particularly strong for songs
+# with low danceabilities, but there seems to be a positive relationship between danceability and
+# empirical log-odds of bieng a long-stay for songs with danceabilities over 40.
+
+
+# Happiness
+cats <- sort(c(0:10*10, 3.5:8.5*10), F)
+emp_probs <- numeric(length(cats)-1)
+n <- numeric(length(cats)-1)
+
+for (i in 1:(length(cats)-1)){
+    emp_probs[i] <- mean(Long.Stay[Happiness > cats[i] & Happiness <= cats[i+1]])
+    emp_probs[i] <- log(emp_probs[i]/(1-emp_probs[i]))
+    n[i] <- sum(Happiness > cats[i] & Happiness <= cats[i+1])
+}
+
+to_plot <- (cats[-length(cats)] + cats[-1])/2 # average value for each category
+plot(to_plot, emp_probs, pch=20, xlab = "Happiness", ylab="Empirical log-odds of long-stay")
+# The relationship between empirical log-odds and danceability isn't particularly strong.
+
+
+
+# Acousticness
+cats <- c(-0.01, 5, 10, 20, 30, 40, 50, 60, 70, 80, 100)
+emp_probs <- numeric(length(cats)-1)
+n <- numeric(length(cats)-1)
+
+for (i in 1:(length(cats)-1)){
+    emp_probs[i] <- mean(Long.Stay[Acousticness > cats[i] & Acousticness <= cats[i+1]])
+    emp_probs[i] <- log(emp_probs[i]/(1-emp_probs[i]))
+    n[i] <- sum(Acousticness > cats[i] & Acousticness <= cats[i+1])
+}
+
+to_plot <- (cats[-length(cats)] + cats[-1])/2 # average value for each category
+plot(to_plot, emp_probs, pch=20, xlab = "Acousticness", ylab="Empirical log-odds of long-stay")
+# The relationship isn't particularly strong, but there could be a negative relationship between the
+# empirical log-odds of being a long-stay and and the probability of being an acoustic song 
+# (according to Spotify). 
+
+
+interested_vars <- c("Decade", "Overall.Rating", "Disagreement", "Artist.Structure", "BPM", "Energy", "Danceability", "Happiness", "Acousticness", "Vocally.Based", "Bass.Based", "Guitar.Based", "Piano.Based", "Saxophone", "Trumpet", "Written.for.a.Film", "Length", "Race")
+pvals <- numeric(length(interested_vars))
+
+
+
+for (i in seq_along(interested_vars)) {
+    
+    varname <- interested_vars[i]
+    cat("Variable:", varname, "\n")
+    
+    #formula
+    fmla <- as.formula(paste("Long.Stay ~", varname))
+    
+    m <- glm(fmla, data = data, family = "binomial")
+    print(summary(m))
+    
+    #extract p-values
+    pvals[i] <- summary(m)$coefficients[2, 4]
+}
+
+pvals
+
+
+results_table <- data.frame(
+    Variable = interested_vars,
+    P_Value  = pvals
+)
+
+results_table
+
+
+## When fitting individual variables, the ones that are significant at an alpha = 0.05 level are:
+# Decade, Overall.Rating, Artist.StructureSolo, Danceability, Acousticness, Guitar.Based, Length,
+# RaceAllWhite.
+```
+
+# Model Analysis 
+Start out by initially fitting the full model with all "reasonable" predictors. We will denote this
+by m0. We will iteratively test the coefficient with the highest p-value for significance in the
+model using a Likelihood Ratio Test (Deviance) and check the AIC to compare the m(n) and m(n+1)
+model.
+
+```{r}
+library(kableExtra)
+
+coef_df <- data.frame(
+  Predictor = c(
+    "Decade", "Overall.Rating", "Artist.Structure", "BPM", 
+    "Energy", "Danceability", "Happiness", "Acousticness",
+    "Vocally.Based", "Bass.Based", "Guitar.Based", "Piano.Based",
+    "Saxophone", "Trumpet", "Written.for.a.Film", "Length", "Race"
+  ),
+  `p-value` = c(
+    "<0.001***", "<0.001***", "0.203", "0.608",
+    "0.918", "0.002**", "0.313", "0.020*",
+    "0.500", "0.313", "<0.001***", "0.732",
+    "0.331", "0.303", "0.487", "0.039*", "0.006**"
+  )
+)
+
+kable(coef_df,
+      format = "latex",
+      booktabs = TRUE,
+      caption = "P-values for Predictors in the Individual Logistic Regression Model",
+      align = "l c") %>%
+  kable_styling(latex_options = "hold_position")
+
+```
+
+```{r}
+billboard <- data
+m0 <- glm(
+  Long.Stay ~ BPM + Energy + Danceability + Happiness + Acousticness +
+    Length + Overall.Rating + Disagreement +
+    Artist.Male + Artist.White + Artist.Black +
+    Vocally.Based + Bass.Based + Guitar.Based + Piano.Based +
+    Saxophone + Trumpet +
+    Written.for.a.Film + Artist.Structure + Decade,
+  family = binomial,
+  data = billboard
+)
+summary(m0)
+
+
+m1 <- update(m0, . ~ . - Artist.Structure)
+anova(m0, m1, test = "LRT")
+summary(m1)
+
+m2 <- update(m1, . ~ . - Piano.Based)
+anova(m1, m2, test = "LRT")
+summary(m2)
+
+m3 <- update(m2, . ~ . - Bass.Based)
+anova(m2, m3, test = "LRT")
+summary(m3)
+
+m4 <- update(m3, . ~ . - Artist.Male)
+anova(m3, m4, test = "LRT")
+summary(m4)
+
+m5 <- update(m4, . ~ . - BPM)
+anova(m4, m5, test = "LRT")
+summary(m5)
+
+m6 <- update(m5, . ~ . - Length)
+anova(m5, m6, test = "LRT")
+summary(m6)
+
+m7 <- update(m6, . ~ . - Happiness)
+anova(m6, m7, test = "LRT")
+summary(m7)
+
+m8 <- update(m7, . ~ . - Vocally.Based)
+anova(m7, m8, test = "LRT")
+summary(m8)
+
+m9 <- update(m8, . ~ . - Saxophone)
+anova(m8, m9, test = "LRT")
+summary(m9)
+
+m10 <- update(m9, . ~ . - Acousticness)
+anova(m9, m10, test = "LRT")
+summary(m10)
+
+m11 <- update(m10, . ~ . - Written.for.a.Film)
+anova(m10, m11, test = "LRT")
+summary(m11)
+
+m12 <- update(m11, . ~ . - Trumpet)
+anova(m11, m12, test = "LRT")
+summary(m12)
+
+m13 <- update(m12, . ~ . - Artist.Black)
+anova(m12, m13, test = "LRT")
+summary(m13)
+
+m14 <- update(m13, . ~ . - Artist.White)
+anova(m13, m14, test = "LRT")
+summary(m14)
+
+m15 <- update(m14, . ~ . - Danceability)
+anova(m14, m15, test = "LRT")
+summary(m15)
+
+m16 <- update(m15, . ~ . - Energy)
+anova(m15, m16, test = "LRT")
+summary(m16)
+
+m17 <- update(m16, . ~ . - Disagreement)
+anova(m16, m17, test = "LRT")
+summary(m13)
+```
+
+Let's try a few interactions: Disagreement * Overall.Rating, Energy * Danceability
+
+```{r}
+m13.1 <- update(m13, . ~ . + Overall.Rating:Disagreement)
+m13.2 <- update(m13, . ~ . + Energy:Danceability)
+m13.3 <- update(m13, . ~ . + Energy:Danceability + Overall.Rating:Disagreement)
+m13.4 <- update(m13, . ~ . + Guitar.Based:Decade)
+m13.5 <- update(m13, . ~ . + Danceability:Artist.White + Overall.Rating:Disagreement)
+m13.6 <- update(m13, . ~ . + Danceability:Artist.White + Energy:Decade)
+
+anova(m13, m13.6, test = "LRT")
+
+AIC(m13)
+AIC(m13.1)
+AIC(m13.2)
+AIC(m13.3)
+AIC(m13.4)
+AIC(m13.5)
+AIC(m13.6) # Final Model
+```
+
+```{r}
+library(ggplot2)
+library(dplyr)
+
+df <- data  # correct dataset
+
+# ---- 1. Generate energy range ----
+energy_seq <- seq(
+  min(df$Energy, na.rm = TRUE),
+  max(df$Energy, na.rm = TRUE),
+  length.out = 200
+)
+
+# ---- 2. Identify MOST COMMON integer levels for the fixed variables ----
+mode_Artist.White <- as.integer(names(sort(table(df$Artist.White), decreasing = TRUE))[1])
+mode_Guitar.Based <- as.integer(names(sort(table(df$Guitar.Based), decreasing = TRUE))[1])
+
+# ---- 3. Create prediction grid ----
+newdat <- expand.grid(
+  Energy = energy_seq,
+  Decade = sort(unique(df$Decade)),  # integer
+  Danceability   = mean(df$Danceability, na.rm = TRUE),
+  Overall.Rating = mean(df$Overall.Rating, na.rm = TRUE),
+  Disagreement   = mean(df$Disagreement, na.rm = TRUE),
+
+  Artist.White   = mode_Artist.White,  # integer, correct type
+  Guitar.Based   = mode_Guitar.Based   # integer, correct type
+)
+
+# ---- 4. Predictions ----
+pred <- predict(m13.6, newdata = newdat, type = "link", se.fit = TRUE)
+
+newdat$fit <- plogis(pred$fit)
+newdat$lo  <- plogis(pred$fit - 1.96 * pred$se.fit)
+newdat$hi  <- plogis(pred$fit + 1.96 * pred$se.fit)
+
+# ---- 5. Clean Decade labels for plotting ----
+newdat$Decade <- factor(newdat$Decade,
+                        levels = sort(unique(df$Decade)),
+                        labels = paste0(sort(unique(df$Decade)), "s"))
+
+# ---- 6. Plot ----
+p <- ggplot(newdat, aes(x = Energy, y = fit, color = Decade)) +
+  geom_line(size = 1.1) +
+  geom_ribbon(aes(ymin = lo, ymax = hi, fill = Decade), alpha = 0.15, color = NA) +
+  labs(
+    title = "Predicted Probability of Long Stay",
+    subtitle = "Interaction: Energy × Decade",
+    x = "Energy (0–100)",
+    y = "Predicted Probability",
+    color = "Decade",
+    fill = "Decade"
+  ) +
+  theme_classic(base_size = 15) +
+  theme(
+    legend.position = "right",
+    plot.title = element_text(face = "bold")
+  )
+
+p
+```
+
+
+The plot reveals a clear decade-by-decade shift in how song Energy predicts chart longevity.
+In the 1950s–1980s, higher-energy songs were less likely to remain at #1 for 4+ weeks.
+By contrast, in recent decades — especially the 2010s and 2020s — higher-energy songs show a higher
+probability of extended chart dominance.
+The 1990s–2000s show relatively flat slopes, indicating that Energy was not strongly related to 
+chart longevity during that period.
+These patterns suggest that the commercial appeal of high-energy tracks has increased sharply over
+time, reflecting shifts in popular music production, consumption habits, and genre dominance.
+
+
+```{r}
+library(ggplot2)
+library(dplyr)
+
+df <- billboard  # correct dataset
+
+# ---- 1. Define range of Danceability ----
+dance_seq <- seq(
+  min(df$Danceability, na.rm = TRUE),
+  max(df$Danceability, na.rm = TRUE),
+  length.out = 200
+)
+
+# ---- 2. Identify most common reference values for non-focal variables ----
+mode_Guitar.Based <- as.integer(names(sort(table(df$Guitar.Based), decreasing = TRUE))[1])
+mode_Artist.White <- sort(unique(df$Artist.White))  # we will loop over them
+
+# ---- 3. Prediction grid ----
+newdat <- expand.grid(
+  Danceability = dance_seq,
+  Artist.White = sort(unique(df$Artist.White)),  # 0,1,2
+  Energy         = mean(df$Energy, na.rm = TRUE),
+  Overall.Rating = mean(df$Overall.Rating, na.rm = TRUE),
+  Disagreement   = mean(df$Disagreement, na.rm = TRUE),
+  Guitar.Based   = mode_Guitar.Based,
+  Decade         = sort(unique(df$Decade))[1]    # fix Decade
+)
+
+# ---- 4. Predictions ----
+pred <- predict(m13.6, newdata = newdat, type = "link", se.fit = TRUE)
+
+newdat$fit <- plogis(pred$fit)
+newdat$lo  <- plogis(pred$fit - 1.96 * pred$se.fit)
+newdat$hi  <- plogis(pred$fit + 1.96 * pred$se.fit)
+
+# ---- 5. Clean labels ----
+newdat$Artist.White <- factor(
+  newdat$Artist.White,
+  levels = sort(unique(df$Artist.White)),
+  labels = c("Non-white", "White", "Mixed")
+)
+
+# ---- 6. Plot ----
+p2 <- ggplot(newdat, aes(x = Danceability, y = fit, color = Artist.White)) +
+  geom_line(size = 1.1) +
+  geom_ribbon(aes(ymin = lo, ymax = hi, fill = Artist.White), alpha = 0.15, color = NA) +
+  labs(
+    title = "Predicted Probability of Long Stay",
+    subtitle = "Interaction: Danceability × Artist.White",
+    x = "Danceability (0–100)",
+    y = "Predicted Probability",
+    color = "Artist Race",
+    fill = "Artist Race"
+  ) +
+  theme_classic(base_size = 15) +
+  theme(
+    plot.title = element_text(face = "bold"),
+    legend.position = "right"
+  )
+
+p2
+```
+
+The interaction between Danceability and Artist.White reveals substantial differences across racial categories. Among mixed-race artists, higher danceability is strongly associated with increased probability of achieving a long stay at #1. White artists show a moderate positive relationship, with danceability contributing to greater chart longevity but to a lesser extent. In contrast, non-white artists display a flat or slightly negative trend, suggesting that danceability has little effect—or even a small decreasing effect—on the likelihood of long chart duration for this group. These findings indicate that the commercial benefits of producing highly danceable songs differ across artist racial categories.
+
+
+glm(formula = Long.Stay ~ Energy + Danceability + Overall.Rating + Disagreement + Artist.White + Guitar.Based + Decade + Danceability:Artist.White + Energy:Decade, family = binomial, data = billboard)
+
+Coefficient Table (Sore)
+
+```{r}
+library(dplyr)
+library(broom)
+library(kableExtra)
+
+# ---------- Number formatting ----------
+format_num <- function(x) {
+  sprintf("%.3f", round(as.numeric(x), 3))
+}
+
+# ---------- P-value formatting ----------
+format_p <- function(p) {
+  if (is.na(p)) return("N/A")
+  if (p < 0.0001) return("$\\mathit{p} < 0.0001^{***}$")
+  if (p < 0.001)  return(paste0("$\\mathit{p} = ", format_num(p), "^{***}$"))
+  if (p < 0.01)   return(paste0("$\\mathit{p} = ", format_num(p), "^{**}$"))
+  if (p < 0.05)   return(paste0("$\\mathit{p} = ", format_num(p), "^{*}$"))
+  paste0("$\\mathit{p} = ", format_num(p), "$")
+}
+
+# ---------- Tidy model: estimates + OR + CI ----------
+coef_tab <- tidy(m13.6) %>% 
+  mutate(
+    OR      = exp(estimate),
+    CI_low  = exp(estimate - 1.96 * std.error),
+    CI_high = exp(estimate + 1.96 * std.error)
+  )
+
+# ========== NEW SAFE LRT FUNCTION (robust, no NA) ==========
+lrt_p <- function(term) {
+
+  if (term == "(Intercept)") return(NA_real_)
+
+  # Extract full original model formula
+  full_form <- formula(m13.6)
+  full_terms <- attr(terms(full_form), "term.labels")
+
+  # Build reduced term list
+  reduced_terms <- setdiff(full_terms, term)
+
+  # Rebuild reduced model explicitly (safe)
+  reduced_form <- as.formula(
+    paste("Long.Stay ~", paste(reduced_terms, collapse = " + "))
+  )
+
+  # Fit reduced model safely
+  reduced_fit <- try(glm(reduced_form, family = binomial, data = billboard),
+                     silent = TRUE)
+  if (inherits(reduced_fit, "try-error")) return(NA_real_)
+
+  # Perform Likelihood Ratio Test
+  LR <- try(anova(reduced_fit, m13.6, test = "LRT"), silent = TRUE)
+  if (inherits(LR, "try-error")) return(NA_real_)
+  if (!("Pr(>Chi)" %in% names(LR))) return(NA_real_)
+  if (nrow(LR) < 2) return(NA_real_)
+
+  LR$`Pr(>Chi)`[2]
+}
+
+coef_tab$LRT_raw <- sapply(coef_tab$term, lrt_p)
+
+# ---------- Pretty predictor labels ----------
+name_map <- c(
+  "(Intercept)"               = "$\\beta_0$, Intercept",
+  "Energy"                    = "$\\beta_E$, Energy",
+  "Danceability"              = "$\\beta_D$, Danceability",
+  "Overall.Rating"            = "$\\beta_R$, Overall Rating",
+  "Disagreement"              = "$\\beta_G$, Disagreement",
+  "Artist.White"              = "$\\beta_W$, Artist: White",
+  "Guitar.Based"              = "$\\beta_B$, Guitar-Based",
+  "Decade"                    = "$\\beta_T$, Decade",
+  "Danceability:Artist.White" = "$\\beta_{D:W}$, Danceability $\\times$ Artist.White",
+  "Energy:Decade"             = "$\\beta_{E:T}$, Energy $\\times$ Decade"
+)
+
+coef_tab$Predictor_Label <- name_map[coef_tab$term]
+
+# ---------- Build final table ----------
+final_tab <- coef_tab %>%
+  mutate(
+    Estimate  = format_num(estimate),
+    OddsRatio = ifelse(term == "(Intercept)", "---", format_num(OR)),
+    CI = ifelse(
+      term == "(Intercept)",
+      "---",
+      paste0("(", format_num(CI_low), ", ", format_num(CI_high), ")")
+    ),
+    LRT_p = sapply(LRT_raw, format_p),
+    Predictor = Predictor_Label
+  ) %>%
+  dplyr::select(Predictor, Estimate, OddsRatio, CI, LRT_p)
+
+# ---------- LaTeX output ----------
+final_tab %>%
+  kable(
+    format = "latex",
+    booktabs = TRUE,
+    escape = FALSE,
+    caption = "Parameter estimates, odds ratios, 95\\% confidence intervals, and likelihood ratio test p-values for the final logistic regression model.",
+    col.names = c("Predictor", "Estimate", "Odds Ratio", "95\\% CI", "LRT p-value")
+  ) %>%
+  kable_styling(latex_options = "hold_position") %>%
+  row_spec(0, bold = TRUE) %>%
+  row_spec(seq(2, nrow(final_tab), 2), background = "#f0f0f0")
+```
+
+
+```{r, results='asis', fig.width=6, fig.height=5}
+library(dplyr)
+library(kableExtra)
+library(ResourceSelection)
+library(pROC)
+
+df_model <- billboard %>%
+  mutate(
+    LongStay = as.numeric(Long.Stay),
+    pred_prob = predict(m13.6, type = "response"),
+    pred_class = ifelse(pred_prob >= 0.5, 1, 0)
+  )
+
+billboard$pred_prob <- predict(m13.6, type = "response")
+
+emp_thresh <- mean(billboard$Long.Stay) 
+
+pred_class <- ifelse(billboard$pred_prob >= emp_thresh, 1, 0)
+
+
+class_tab_raw <- table(
+  Predicted = pred_class,
+  True      = billboard$Long.Stay
+)
+
+class_df <- data.frame(
+  Predicted = c("No", "Yes"),
+  No  = c(class_tab_raw["0", "0"], class_tab_raw["1", "0"]),
+  Yes = c(class_tab_raw["0", "1"], class_tab_raw["1", "1"])
+)
+
+class_kable <- kable(
+  class_df,
+  format = "latex",
+  booktabs = TRUE,
+  caption = "Classification Table Using Empirical Probability Threshold (p = 0.2628)",
+  align = "c"
+) %>%
+  kable_styling(latex_options = "hold_position", position = "center") %>%
+  add_header_above(c(" " = 1, "True" = 2))
+
+print(class_kable)
+
+hl <- hoslem.test(df_model$LongStay, df_model$pred_prob, g = 10)
+
+hl_df <- data.frame(
+  Statistic = round(hl$statistic, 3),
+  df        = hl$parameter,
+  p_value_raw = round(hl$p.value, 4)
+)
+
+# Format p-values with LaTeX-safe inline math
+hl_df$p_value <- dplyr::case_when(
+  hl_df$p_value_raw < 0.0001 ~ "\\(\\mathit{p} < 0.0001^{***}\\)",
+  hl_df$p_value_raw < 0.001  ~ paste0("\\(\\mathit{p} = ", hl_df$p_value_raw, "^{***}\\)"),
+  hl_df$p_value_raw < 0.01   ~ paste0("\\(\\mathit{p} = ", hl_df$p_value_raw, "^{**}\\)"),
+  hl_df$p_value_raw < 0.05   ~ paste0("\\(\\mathit{p} = ", hl_df$p_value_raw, "^{*}\\)"),
+  TRUE                       ~ paste0("\\(\\mathit{p} = ", hl_df$p_value_raw, "\\)")
+)
+
+# Remove raw p-value and rename safely
+hl_df <- hl_df %>%
+  dplyr::select(
+    Statistic,
+    df,
+    `p-value` = p_value
+  )
+
+hl_kable <- kable(
+  hl_df,
+  format = "latex",
+  booktabs = TRUE,
+  escape = FALSE,
+  caption = "Hosmer--Lemeshow Goodness-of-Fit Test"
+) %>%
+  kable_styling(latex_options = "hold_position")
+
+print(hl_kable)
+
+# =============================
+# 4. ROC Curve + AUC
+# =============================
+roc_obj <- roc(df_model$LongStay, df_model$pred_prob)
+
+plot(
+  roc_obj,
+  col = "black",
+  lwd = 2,
+  main = "ROC Curve",
+  xlab = "1 - Specificity",
+  ylab = "Sensitivity"
+)
+
+text(
+  x = 0.7, y = 0.2,
+  labels = paste0("AUC = ", round(auc(roc_obj), 3)),
+  cex = 1
+)
+```
+
+```{r}
+billboard$std_resid <- rstandard(m13.6, type = "pearson")
+# Count residuals above common thresholds
+n_over2 <- sum(abs(billboard$std_resid) > 2)
+n_over3 <- sum(abs(billboard$std_resid) > 3)
+max_resid <- max(abs(billboard$std_resid))
+
+# Print results
+cat("Residuals > 2:", n_over2, "\n")
+cat("Residuals > 3:", n_over3, "\n")
+cat("Maximum absolute standardized residual:", round(max_resid, 3), "\n")
+```
+
+```{r}
+# Standardized residuals
+billboard$std_resid <- rstandard(m13.6, type = "pearson")
+
+# Histogram
+hist(billboard$std_resid,
+     breaks = 40,
+     main = "Histogram of Standardized Residuals",
+     xlab = "Standardized Residual",
+     col = "lightgray",
+     border = "white")
+
+```
+
+```{r}
+m13i = m13.6
+```
+
+```{r}
+# Comparison table
+models <- list(
+  m0 = m0,
+  m1 = m1,
+  m2 = m2,
+  m3 = m3,
+  m4 = m4,
+  m5 = m5,
+  m6 = m6,
+  m7 = m7,
+  m8 = m8,
+  m9 = m9,
+  m10 = m10,
+  m11 = m11,
+  m12 = m12,
+  m13 = m13,
+  m13i = m13i
+)
+
+comparison <- data.frame(
+  Model    = names(models),
+  DF       = sapply(models, df.residual),
+  Deviance = round(sapply(models, deviance), 3),
+  AIC      = round(sapply(models, AIC), 3),
+  BIC      = round(sapply(models, BIC), 3)
+)
+
+# Produce formatted kable table
+library(kableExtra)
+
+kable(
+  comparison,
+  format = "latex",
+  booktabs = TRUE,
+  caption = "Comparison of Logistic Regression Models",
+  align = c("c", "c", "c", "c", "c")
+) %>%
+  kable_styling(
+    latex_options = c("hold_position"),
+    position = "center"
+  )
+```
+
+
+
